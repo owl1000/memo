@@ -322,7 +322,7 @@ body.narrow.screen-note #bnBackup{display:none}
 <script>
 'use strict';
 /* ===== Memo v1.0 ===== */
-const APP_VER = '1.0';
+const APP_VER = '1.2';
 const KEY = 'memo-app-data-v1';
 const PKEY = 'memo-prefs-v1';
 const BKEY = 'memo-last-backup';
@@ -351,7 +351,7 @@ const mq = matchMedia('(min-width: 900px)');
 
 /* ===== data ===== */
 let D, P, lastSaved = '', readOnly = false, saveTimer = null;
-const defaultPrefs = { mode: 'split', style: 'std', sort: 'upd', fs: 0, rate: 1, voice: '', side: true, collapsed: {} };
+const defaultPrefs = { printDate: false, mode: 'split', style: 'std', sort: 'upd', fs: 0, rate: 1, voice: '', side: true, collapsed: {} };
 function welcomeData() {
   const now = Date.now();
   const n1 = { id: uid(), title: 'Memoの使い方', folder: null, pinned: false, created: now, updated: now, body:
@@ -923,13 +923,25 @@ const FMT = [
   ['・', () => linePrefix('ul')], ['1.', () => linePrefix('ol')], ['☑', () => linePrefix('task')], ['>', () => linePrefix('quote')], null,
   ['表', insertTable], ['{ }', insertCode], ['―', () => insertBlock('---')], ['[[ ]]', wikiLink], ['URL', urlLink]
 ];
+let lastSel = [0, 0], lastTouchRun = 0;
+function rememberSel() { lastSel = [src.selectionStart, src.selectionEnd]; }
+['select', 'keyup', 'mouseup', 'touchend', 'input', 'blur'].forEach(ev => src.addEventListener(ev, rememberSel));
 function buildFmt() {
   const f = $('#fmt');
   for (const it of FMT) {
     if (!it) { f.append(el('span', { class: 'fsep' })); continue; }
     const b = el('button', { type: 'button' }, it[0]); if (it[2]) b.style.cssText = it[2];
+    const run = () => {
+      if (readOnly || !cur || modeNow === 'view') return;
+      if (document.activeElement !== src) { src.focus({ preventScroll: true }); src.setSelectionRange(lastSel[0], lastSel[1]); }
+      it[1](); rememberSel();
+    };
+    let tx = 0, ty = 0, moved = false;
+    b.addEventListener('touchstart', e => { const t = e.touches[0]; tx = t.clientX; ty = t.clientY; moved = false; }, { passive: true });
+    b.addEventListener('touchmove', e => { const t = e.touches[0]; if (Math.abs(t.clientX - tx) > 8 || Math.abs(t.clientY - ty) > 8) moved = true; }, { passive: true });
+    b.addEventListener('touchend', e => { if (moved) return; e.preventDefault(); lastTouchRun = Date.now(); run(); }, { passive: false });
     b.addEventListener('mousedown', e => e.preventDefault());
-    b.addEventListener('click', () => { if (readOnly || !cur) return; if (modeNow === 'view') return; it[1](); });
+    b.addEventListener('click', () => { if (Date.now() - lastTouchRun < 700) return; run(); });
     f.append(b);
   }
 }
@@ -1147,6 +1159,7 @@ $('#noteMenuBtn').addEventListener('click', e => {
     { label: '複製', action: () => duplicateNote(n) },
     { label: '書き出し（.md）', action: () => exportOne(n) },
     { label: 'PDF出力', action: doPrint },
+    { label: 'PDFに日時を入れる', checked: !!P.printDate, action: () => { P.printDate = !P.printDate; savePrefs(); toast(P.printDate ? 'PDFの右下に印刷した日時を入れます' : 'PDFに日時を入れません'); } },
     { sep: true },
     { label: '削除', danger: true, action: () => deleteNote(n) }
   ], e.currentTarget);
@@ -1179,15 +1192,20 @@ $('#q').addEventListener('input', renderList);
 $('#sort').addEventListener('change', e => { P.sort = e.target.value; savePrefs(); renderList(); });
 
 /* ===== print ===== */
+function setPageStyle() {
+  let st = document.getElementById('pageStyle'); if (!st) { st = el('style', { id: 'pageStyle' }); document.head.append(st); }
+  const d = new Date(); const stamp = P.printDate ? `${today(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}` : '';
+  st.textContent = `@page{@top-left{content:""}@top-center{content:""}@top-right{content:""}@bottom-left{content:""}@bottom-right{content:"${stamp}";font-size:8pt;color:#888}}`;
+}
 function doPrint() {
   const n = noteById(cur); if (!n) return;
   if (tts.active) ttsStop();
   const prev = modeNow;
   if (modeNow === 'edit') setMode('view', true);
-  renderPreview(); document.title = pageName(n);
+  renderPreview(); document.title = pageName(n); setPageStyle();
   setTimeout(() => { window.print(); if (prev === 'edit') setMode('edit', true); }, 50);
 }
-addEventListener('beforeprint', () => { const n = noteById(cur); if (n) { renderPreview(); document.title = pageName(n); } });
+addEventListener('beforeprint', () => { setPageStyle(); const n = noteById(cur); if (n) { renderPreview(); document.title = pageName(n); } });
 
 /* ===== files: save / share ===== */
 async function saveFile(blob, name, types) {
@@ -1422,7 +1440,7 @@ function renderTplEdit() {
 $('#tplNew').addEventListener('click', () => { const t = { id: uid(), name: '新しいテンプレート', title: '', body: '', updated: Date.now() }; D.templates.push(t); tplCur = t.id; saveNow(); renderTplList(); renderTplEdit(); });
 
 /* ===== service worker / update ===== */
-let swReg = null;
+let swReg = null, updateRequested = false;
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('sw.js').then(reg => {
     swReg = reg;
@@ -1432,9 +1450,9 @@ if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
   }).catch(() => {});
   let reloading = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloading) return; reloading = true; saveNow(); location.reload(); });
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (reloading || !updateRequested) return; reloading = true; saveNow(); location.reload(); });
 }
-$('#bnUpdateBtn').addEventListener('click', () => { saveNow(); if (swReg && swReg.waiting) swReg.waiting.postMessage('skipWaiting'); else location.reload(); });
+$('#bnUpdateBtn').addEventListener('click', () => { saveNow(); updateRequested = true; if (swReg && swReg.waiting) swReg.waiting.postMessage('skipWaiting'); else location.reload(); });
 
 /* ===== init ===== */
 function init() {

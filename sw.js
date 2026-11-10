@@ -1,5 +1,5 @@
 // アプリを直したときは、この番号を上げる（memo-v2 など）
-const CACHE = 'memo-v1';
+const CACHE = 'memo-v3';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
